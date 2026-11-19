@@ -12,6 +12,11 @@ export default defineNuxtConfig({
   // The map style is light-only, so the UI stays light too.
   colorMode: { preference: 'light' },
 
+  // Override with NUXT_PUBLIC_API_BASE.
+  runtimeConfig: {
+    public: { apiBase: 'https://agua-alerta-api.adrian9012.workers.dev' }
+  },
+
   compatibilityDate: '2026-06-30',
 
   eslint: {

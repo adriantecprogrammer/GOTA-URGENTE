@@ -4,17 +4,18 @@ import type { ExpressionSpecification, GeoJSONSource, MapLayerMouseEvent } from 
 import 'maplibre-gl/dist/maplibre-gl.css'
 // MapLibre v6 looks for its worker next to the bundle chunk, where Vite never copies it; ?url emits it as an asset.
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
+import type { Leak } from '~/services/leaks'
 
 maplibregl.setWorkerUrl(workerUrl)
 
 const props = defineProps<{
-  incidents: Incident[]
+  leaks: Leak[]
   selectedId?: string | null
   /** Show a fixed center pin and emit `center` as the map moves. */
   picking?: boolean
   /** Area covered by floating UI; map center and pin sit in the visible remainder. */
   padding?: { left: number, bottom: number }
-  /** Thumbnail mode: zoom out to show every open incident; restores the previous view when turned off. */
+  /** Thumbnail mode: zoom out to show every leak; restores the previous view when turned off. */
   overview?: boolean
 }>()
 const emit = defineEmits<{ select: [id: string], center: [pos: { lat: number, lng: number }], tap: [] }>()
@@ -33,15 +34,14 @@ const DOT_LAYERS = ['inc-dot']
 
 const geojson = computed(() => ({
   type: 'FeatureCollection' as const,
-  features: props.incidents.map(i => ({
+  features: props.leaks.map(i => ({
     type: 'Feature' as const,
     geometry: { type: 'Point' as const, coordinates: [i.lng, i.lat] },
     properties: {
       id: i.id,
-      count: i.reports.length,
-      color: i.status === 'resuelto' ? RESOLVED_HEX : LEVEL[i.level].hex,
-      active: i.status !== 'resuelto',
-      critical: i.level === 'critica' && i.status === 'pendiente'
+      count: i.report_count,
+      color: isOpen(i.status) ? LEVEL[i.urgency_level].hex : RESOLVED_HEX,
+      critical: i.urgency_level === 'critica' && i.status === 'pendiente'
     }
   }))
 }))
@@ -133,10 +133,9 @@ function saveViewAndFit() {
   fitOpen()
 }
 function fitOpen() {
-  const open = props.incidents.filter(i => i.status !== 'resuelto')
-  if (!open.length) return
+  if (!props.leaks.length) return
   const b = new maplibregl.LngLatBounds()
-  for (const i of open) b.extend([i.lng, i.lat])
+  for (const i of props.leaks) b.extend([i.lng, i.lat])
   map.setPadding({ top: 0, right: 0, bottom: 0, left: 0 })
   map.fitBounds(b, { padding: 16, animate: false })
 }
