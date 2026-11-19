@@ -80,8 +80,6 @@ html, body, #__nuxt { height: 100%; }
   button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
 }
 
-@keyframes sheet-in { from { transform: translateY(100%); } }
-
 /* Base elevation: one soft shadow for floating surfaces over the map. */
 @utility surface-float {
   background: var(--ui-bg);
