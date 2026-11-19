@@ -15,6 +15,8 @@ const toast = useToast()
 const severity = ref<Severity>()
 const photo = ref<File | null>(null)
 const photoUrl = useObjectUrl(photo)
+// Photo of an existing leak shown full size, so the person can tell whether it's the one in front of them.
+const zoomed = ref<string | null>(null)
 
 // Two native inputs: `capture` opens the rear camera straight away (Android's photo picker hides the camera
 // when only `accept="image/*"` is given); the other one opens the gallery.
@@ -275,7 +277,7 @@ function reset() {
         <label
           v-for="c in candidates"
           :key="c.id"
-          class="flex items-center gap-3 rounded-xl p-3 ring-2 transition-colors has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-gota-500"
+          class="relative flex items-center gap-3 rounded-xl p-3 ring-2 transition-colors has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-gota-500"
           :class="[
             target === c.id ? 'bg-default ring-inverted' : 'bg-muted ring-transparent',
             hasReported(c.id) ? 'opacity-60' : 'cursor-pointer hover:bg-elevated'
@@ -290,12 +292,26 @@ function reset() {
             class="sr-only"
             @change="pick(c.id)"
           >
-          <img
+          <!-- Own button inside the card: .prevent keeps the tap from also picking this leak. -->
+          <button
             v-if="c.photo_url"
-            :src="c.photo_url"
-            alt=""
-            class="size-14 shrink-0 rounded-lg object-cover"
+            type="button"
+            class="relative size-16 shrink-0 overflow-hidden rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gota-500"
+            aria-label="Ver foto en grande"
+            @click.prevent="zoomed = c.photo_url"
           >
+            <img
+              :src="c.photo_url"
+              alt=""
+              class="size-full object-cover"
+            >
+            <span class="absolute bottom-1 right-1 grid size-6 place-items-center rounded-full bg-black/60 text-white">
+              <UIcon
+                name="i-lucide-maximize-2"
+                class="size-3.5"
+              />
+            </span>
+          </button>
           <SeverityIcon
             v-else
             :severity="c.max_severity"
@@ -312,7 +328,7 @@ function reset() {
           />
         </label>
         <label
-          class="flex cursor-pointer items-center gap-3 rounded-xl p-3 ring-2 transition-colors has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-gota-500"
+          class="relative flex cursor-pointer items-center gap-3 rounded-xl p-3 ring-2 transition-colors has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-gota-500"
           :class="target === NEW ? 'bg-default ring-inverted' : 'bg-muted ring-transparent hover:bg-elevated'"
         >
           <input
@@ -409,7 +425,7 @@ function reset() {
             <label
               v-for="opt in [{ label: 'Tomar foto', icon: 'i-lucide-camera', camera: true }, { label: 'Galería', icon: 'i-lucide-image', camera: false }]"
               :key="opt.label"
-              class="flex min-h-24 cursor-pointer flex-col items-center justify-center gap-2 rounded-xl bg-muted p-3 font-semibold text-highlighted transition-colors hover:bg-elevated has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-gota-500"
+              class="relative flex min-h-24 cursor-pointer flex-col items-center justify-center gap-2 rounded-xl bg-muted p-3 font-semibold text-highlighted transition-colors hover:bg-elevated has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-gota-500"
             >
               <input
                 type="file"
@@ -466,4 +482,19 @@ function reset() {
       />
     </footer>
   </form>
+
+  <UModal
+    :open="!!zoomed"
+    title="Foto de la fuga reportada"
+    @update:open="v => !v && (zoomed = null)"
+  >
+    <template #body>
+      <img
+        v-if="zoomed"
+        :src="zoomed"
+        alt="Foto de la fuga reportada"
+        class="max-h-[70dvh] w-full rounded-lg object-contain"
+      >
+    </template>
+  </UModal>
 </template>
