@@ -11,13 +11,12 @@
     "typecheck": "nuxt typecheck"
   },
   "dependencies": {
-    "@ant-design-vue/nuxt": "1.4.6",
     "@iconify-json/lucide": "^1.2.147",
     "@iconify-json/simple-icons": "^1.2.100",
     "@nuxt/image": "2.2.1",
     "@nuxt/ui": "^4.12.0",
-    "@nuxtjs/tailwindcss": "6.14.0",
-    "ant-design-vue": "^4.2.6",
+    "@vueuse/core": "^15.0.0",
+    "maplibre-gl": "^6.19.0",
     "nuxt": "^4.6.3",
     "tailwindcss": "^4.3.3"
   },
