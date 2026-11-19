@@ -112,6 +112,8 @@ const center = ref<{ lat: number, lng: number } | null>(null)
 // GET /leaks only returns open leaks.
 const selected = computed(() => leaks.value.find(i => i.id === selectedId.value))
 const inProgress = computed(() => leaks.value.filter(i => i.status === 'en_atencion').length)
+// The API sorts by urgency; citizens get the newest first so the order doesn't hint at priority.
+const recent = computed(() => leaks.value.toSorted((a, b) => b.first_reported_at.localeCompare(a.first_reported_at)))
 
 function select(id: string) {
   selectedId.value = id
@@ -252,22 +254,9 @@ function finishReport(leakId: string) {
             aria-label="Volver a la lista"
             @click="mode = 'browse'"
           />
-          <span class="text-sm font-medium text-muted uppercase tabular-nums">#{{ selected.id.slice(0, 8) }}</span>
         </header>
         <div class="min-h-0 flex-1 space-y-6 overflow-y-auto px-6 pb-6">
           <div class="space-y-3">
-            <div class="flex items-center gap-3">
-              <UrgencyScore
-                :leak="selected"
-                size="lg"
-              />
-              <p class="text-sm text-muted">
-                <span class="block text-base font-semibold text-highlighted">
-                  Urgencia {{ LEVEL[selected.urgency_level].label.toLowerCase() }}
-                </span>
-                {{ selected.urgency_score }} de 100
-              </p>
-            </div>
             <h2 class="text-2xl font-bold leading-tight tracking-tight text-highlighted">
               {{ addressOf(selected) ?? fmtCoords(selected) }}
             </h2>
@@ -276,33 +265,15 @@ function finishReport(leakId: string) {
             </p>
           </div>
 
-          <dl class="grid grid-cols-2 gap-px overflow-hidden rounded-xl bg-(--ui-border)">
-            <div class="bg-muted p-4">
-              <dt class="text-sm text-muted">
-                Reportes
-              </dt>
-              <dd class="display text-2xl font-bold text-highlighted tabular-nums">
-                {{ selected.report_count }}
-              </dd>
+          <!-- Citizens see what and where, plus whether it's being fixed. Priority and metrics are for the dashboard. -->
+          <div class="rounded-xl bg-muted p-4">
+            <p class="text-sm text-muted">
+              Estado
+            </p>
+            <div class="mt-1">
+              <StatusSteps :status="selected.status" />
             </div>
-            <div class="bg-muted p-4">
-              <dt class="text-sm text-muted">
-                Estado
-              </dt>
-              <dd class="mt-1">
-                <StatusSteps :status="selected.status" />
-              </dd>
-            </div>
-            <div class="col-span-2 bg-muted p-4">
-              <dt class="text-sm text-muted">
-                Agua perdida (estimada)
-              </dt>
-              <dd class="display text-2xl font-bold text-highlighted tabular-nums">
-                {{ fmtLiters(selected.liters_wasted) }}
-                <span class="text-sm font-medium text-muted">· {{ fmtLiters(selected.liters_per_day) }} al día</span>
-              </dd>
-            </div>
-          </dl>
+          </div>
 
           <img
             v-if="selected.photo_url"
@@ -332,9 +303,6 @@ function finishReport(leakId: string) {
               label="Yo también la veo"
               @click="startReport(selected)"
             />
-            <p class="text-center text-xs text-muted">
-              Confirmarla sube su prioridad
-            </p>
           </template>
         </footer>
       </div>
@@ -383,7 +351,7 @@ function finishReport(leakId: string) {
           :class="mini ? 'pb-44' : 'pb-3'"
         >
           <li
-            v-for="i in leaks"
+            v-for="i in recent"
             :key="i.id"
           >
             <button
@@ -391,11 +359,11 @@ function finishReport(leakId: string) {
               class="flex w-full items-center gap-3 rounded-xl p-3 text-left transition-colors hover:bg-muted active:bg-elevated focus-visible:outline-2 focus-visible:outline-gota-500"
               @click="select(i.id)"
             >
-              <UrgencyScore :leak="i" />
+              <SeverityIcon :severity="i.max_severity" />
               <span class="min-w-0 flex-1">
                 <span class="block truncate font-medium text-highlighted">{{ addressOf(i) ?? fmtCoords(i) }}</span>
                 <span class="block truncate text-sm text-muted">
-                  {{ SEVERITY[i.max_severity].label }} · {{ i.report_count }} {{ i.report_count === 1 ? 'reporte' : 'reportes' }} · {{ i.status === 'en_atencion' ? 'En reparación' : timeAgo(Date.parse(i.first_reported_at)) }}
+                  {{ SEVERITY[i.max_severity].label }} · {{ i.status === 'en_atencion' ? 'En reparación' : `Reportada ${timeAgo(Date.parse(i.first_reported_at))}` }}
                 </span>
               </span>
             </button>

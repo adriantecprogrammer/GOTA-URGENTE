@@ -156,25 +156,7 @@ function reset() {
         {{ result.action === 'confirmed' ? 'Fuga confirmada' : 'Reporte enviado' }}
       </h2>
       <p class="text-muted">
-        Folio <span class="font-medium text-highlighted uppercase tabular-nums">{{ result.report_id.slice(0, 8) }}</span>. Gracias por cuidar el agua de tu colonia.
-      </p>
-    </div>
-
-    <div class="space-y-3 rounded-xl bg-muted p-4">
-      <div class="flex items-center justify-between gap-3">
-        <span class="font-semibold text-highlighted">Prioridad {{ LEVEL[result.leak.urgency_level].label.toLowerCase() }}</span>
-        <UrgencyScore :leak="result.leak" />
-      </div>
-      <p class="text-sm text-muted">
-        <template v-if="result.action === 'confirmed'">
-          Ya son <b class="text-highlighted">{{ result.leak.report_count }} personas</b> reportando esta fuga, así que subió su prioridad.
-        </template>
-        <template v-else>
-          Eres la primera persona en reportarla. Si alguien más la reporta, su prioridad subirá.
-        </template>
-        <template v-if="result.is_recurrent">
-          Aquí ya se había reparado una fuga: la marcamos como reincidente.
-        </template>
+        {{ result.action === 'confirmed' ? 'Gracias por confirmarla: así la cuadrilla sabe que sigue ahí.' : 'Gracias por cuidar el agua de tu colonia. La cuadrilla ya puede verla.' }}
       </p>
     </div>
 
@@ -279,7 +261,7 @@ function reset() {
           {{ nearby?.exact ? 'Ya se reportó una fuga aquí' : 'Hay fugas reportadas cerca' }}
         </legend>
         <p class="mb-3 text-sm text-muted">
-          ¿Es la misma que ves? Confirmarla toma un toque y sube su prioridad.
+          ¿Es la misma que ves? Confírmala con un toque.
         </p>
         <label
           v-for="c in candidates"
@@ -312,7 +294,7 @@ function reset() {
           />
           <span class="min-w-0 flex-1">
             <span class="block font-semibold text-highlighted">{{ hasReported(c.id) ? 'Ya la reportaste' : 'Sí, es esta' }}</span>
-            <span class="block text-sm text-muted">{{ SEVERITY[c.max_severity].label }} · {{ c.report_count }} {{ c.report_count === 1 ? 'reporte' : 'reportes' }} · a {{ Math.round(c.distance_m) }} m</span>
+            <span class="block text-sm text-muted">{{ SEVERITY[c.max_severity].label }} · a {{ Math.round(c.distance_m) }} m</span>
           </span>
           <UIcon
             v-if="target === c.id"
