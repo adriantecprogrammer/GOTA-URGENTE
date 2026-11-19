@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { useDebounceFn } from '@vueuse/core'
+import { useDebounceFn, useObjectUrl } from '@vueuse/core'
 import type { NearbyResult } from '~/services/leaks'
 import { hasReported, type CreateReportResult } from '~/services/reports'
 
@@ -14,6 +14,15 @@ const toast = useToast()
 
 const severity = ref<Severity>()
 const photo = ref<File | null>(null)
+const photoUrl = useObjectUrl(photo)
+
+// Two native inputs: `capture` opens the rear camera straight away (Android's photo picker hides the camera
+// when only `accept="image/*"` is given); the other one opens the gallery.
+function pickPhoto(e: Event) {
+  const input = e.target as HTMLInputElement
+  photo.value = input.files?.[0] ?? null
+  input.value = '' // so picking the same file again still fires `change`
+}
 const note = ref('')
 const address = ref<string>()
 const locating = ref(false)
@@ -156,25 +165,7 @@ function reset() {
         {{ result.action === 'confirmed' ? 'Fuga confirmada' : 'Reporte enviado' }}
       </h2>
       <p class="text-muted">
-        Folio <span class="font-medium text-highlighted uppercase tabular-nums">{{ result.report_id.slice(0, 8) }}</span>. Gracias por cuidar el agua de tu colonia.
-      </p>
-    </div>
-
-    <div class="space-y-3 rounded-xl bg-muted p-4">
-      <div class="flex items-center justify-between gap-3">
-        <span class="font-semibold text-highlighted">Prioridad {{ LEVEL[result.leak.urgency_level].label.toLowerCase() }}</span>
-        <UrgencyScore :leak="result.leak" />
-      </div>
-      <p class="text-sm text-muted">
-        <template v-if="result.action === 'confirmed'">
-          Ya son <b class="text-highlighted">{{ result.leak.report_count }} personas</b> reportando esta fuga, así que subió su prioridad.
-        </template>
-        <template v-else>
-          Eres la primera persona en reportarla. Si alguien más la reporta, su prioridad subirá.
-        </template>
-        <template v-if="result.is_recurrent">
-          Aquí ya se había reparado una fuga: la marcamos como reincidente.
-        </template>
+        {{ result.action === 'confirmed' ? 'Gracias por confirmarla: así la cuadrilla sabe que sigue ahí.' : 'Gracias por cuidar el agua de tu colonia. La cuadrilla ya puede verla.' }}
       </p>
     </div>
 
@@ -279,7 +270,7 @@ function reset() {
           {{ nearby?.exact ? 'Ya se reportó una fuga aquí' : 'Hay fugas reportadas cerca' }}
         </legend>
         <p class="mb-3 text-sm text-muted">
-          ¿Es la misma que ves? Confirmarla toma un toque y sube su prioridad.
+          ¿Es la misma que ves? Confírmala con un toque.
         </p>
         <label
           v-for="c in candidates"
@@ -312,7 +303,7 @@ function reset() {
           />
           <span class="min-w-0 flex-1">
             <span class="block font-semibold text-highlighted">{{ hasReported(c.id) ? 'Ya la reportaste' : 'Sí, es esta' }}</span>
-            <span class="block text-sm text-muted">{{ SEVERITY[c.max_severity].label }} · {{ c.report_count }} {{ c.report_count === 1 ? 'reporte' : 'reportes' }} · a {{ Math.round(c.distance_m) }} m</span>
+            <span class="block text-sm text-muted">{{ SEVERITY[c.max_severity].label }} · a {{ Math.round(c.distance_m) }} m</span>
           </span>
           <UIcon
             v-if="target === c.id"
@@ -395,14 +386,49 @@ function reset() {
           </h3>
           <span class="text-sm text-muted">Recomendada</span>
         </div>
-        <UFileUpload
-          v-model="photo"
-          accept="image/*"
-          icon="i-lucide-camera"
-          label="Toma o sube una foto"
-          description="Ayuda a la cuadrilla a llegar preparada"
-          class="min-h-36 w-full"
-        />
+        <div
+          v-if="photoUrl"
+          class="relative"
+        >
+          <img
+            :src="photoUrl"
+            alt="Foto de la fuga"
+            class="aspect-video w-full rounded-xl object-cover"
+          >
+          <UButton
+            icon="i-lucide-x"
+            color="neutral"
+            variant="solid"
+            class="absolute right-2 top-2 size-11 justify-center rounded-full!"
+            aria-label="Quitar foto"
+            @click="photo = null"
+          />
+        </div>
+        <template v-else>
+          <div class="grid grid-cols-2 gap-2">
+            <label
+              v-for="opt in [{ label: 'Tomar foto', icon: 'i-lucide-camera', camera: true }, { label: 'Galería', icon: 'i-lucide-image', camera: false }]"
+              :key="opt.label"
+              class="flex min-h-24 cursor-pointer flex-col items-center justify-center gap-2 rounded-xl bg-muted p-3 font-semibold text-highlighted transition-colors hover:bg-elevated has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-gota-500"
+            >
+              <input
+                type="file"
+                accept="image/*"
+                :capture="opt.camera ? 'environment' : undefined"
+                class="sr-only"
+                @change="pickPhoto"
+              >
+              <UIcon
+                :name="opt.icon"
+                class="size-6"
+              />
+              {{ opt.label }}
+            </label>
+          </div>
+          <p class="text-sm text-muted">
+            Ayuda a la cuadrilla a llegar preparada
+          </p>
+        </template>
       </section>
 
       <!-- 4. Notes (new leaks only) -->

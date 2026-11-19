@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { StorageSerializers, useStorage } from '@vueuse/core'
 import * as maplibregl from 'maplibre-gl'
-import type { ExpressionSpecification, GeoJSONSource, MapLayerMouseEvent } from 'maplibre-gl'
+import type { GeoJSONSource, MapLayerMouseEvent } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 // MapLibre v6 looks for its worker next to the bundle chunk, where Vite never copies it; ?url emits it as an asset.
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
@@ -67,7 +67,8 @@ function showMe(p: Point) {
   else if (!target) map.jumpTo(view)
 }
 
-const RESOLVED_HEX = '#AFAFAF'
+// One colour, one size: urgency is the dashboard's business, citizens only need to see where leaks are.
+const PIN_HEX = '#0278C0'
 const DOT_LAYERS = ['inc-dot']
 
 const geojson = computed(() => ({
@@ -75,12 +76,7 @@ const geojson = computed(() => ({
   features: props.leaks.map(i => ({
     type: 'Feature' as const,
     geometry: { type: 'Point' as const, coordinates: [i.lng, i.lat] },
-    properties: {
-      id: i.id,
-      count: i.report_count,
-      color: isOpen(i.status) ? LEVEL[i.urgency_level].hex : RESOLVED_HEX,
-      critical: i.urgency_level === 'critica' && i.status === 'pendiente'
-    }
+    properties: { id: i.id }
   }))
 }))
 
@@ -110,20 +106,13 @@ onMounted(async () => {
 
   map.on('load', () => {
     map.addSource('incidents', { type: 'geojson', data: geojson.value })
-    const radius: ExpressionSpecification = ['interpolate', ['linear'], ['get', 'count'], 1, 7, 6, 14]
-    map.addLayer({
-      id: 'inc-halo',
-      type: 'circle',
-      source: 'incidents',
-      filter: ['get', 'critical'],
-      paint: { 'circle-color': ['get', 'color'], 'circle-opacity': 0.18, 'circle-radius': ['*', radius, 2.6] }
-    })
+    const radius = 8
     map.addLayer({
       id: 'inc-dot',
       type: 'circle',
       source: 'incidents',
       paint: {
-        'circle-color': ['get', 'color'],
+        'circle-color': PIN_HEX,
         'circle-radius': radius,
         'circle-stroke-color': '#FFFFFF',
         'circle-stroke-width': 2.5
@@ -136,18 +125,10 @@ onMounted(async () => {
       filter: ['==', ['get', 'id'], props.selectedId ?? ''],
       paint: {
         'circle-color': 'transparent',
-        'circle-radius': ['+', radius, 5],
+        'circle-radius': radius + 5,
         'circle-stroke-color': '#002F59',
         'circle-stroke-width': 3
       }
-    })
-    map.addLayer({
-      id: 'inc-count',
-      type: 'symbol',
-      source: 'incidents',
-      filter: ['>', ['get', 'count'], 1],
-      layout: { 'text-field': ['to-string', ['get', 'count']], 'text-size': 11, 'text-font': ['Noto Sans Bold'], 'text-allow-overlap': true },
-      paint: { 'text-color': '#FFFFFF' }
     })
   })
 
