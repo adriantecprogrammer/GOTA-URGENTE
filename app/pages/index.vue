@@ -142,7 +142,8 @@ function finishReport(leakId: string) {
 </script>
 
 <template>
-  <div class="relative h-dvh w-full overflow-hidden bg-default">
+  <div class="relative h-dvh w-full overflow-clip bg-default">
+    <!-- overflow-clip, not hidden: a hidden box can still be scrolled by the browser (focus, scrollIntoView), which shoves the whole app up. -->
     <!-- Map: full screen, or a floating thumbnail on the mobile home. Sizes are explicit so they can transition. -->
     <div
       class="absolute isolate overflow-hidden transition-all ease-out motion-reduce:transition-none"
@@ -209,7 +210,7 @@ function finishReport(leakId: string) {
       tabindex="-1"
       class="surface-float outline-none absolute inset-x-0 bottom-0 flex flex-col rounded-b-none! lg:inset-y-4 lg:left-4 lg:right-auto lg:max-h-none lg:w-[400px] lg:rounded-b-2xl!"
       :class="[
-        tall ? 'h-dvh max-h-dvh rounded-none! shadow-none!' : low ? 'max-h-24 overflow-hidden' : 'max-h-[56dvh]',
+        tall ? 'h-dvh max-h-dvh rounded-none! shadow-none!' : low ? 'max-h-24 overflow-clip' : 'max-h-[56dvh]',
         snapping && 'transition-[height,max-height] duration-250 ease-out motion-reduce:transition-none'
       ]"
       :style="drag == null ? undefined : { height: `${drag}px`, maxHeight: `${drag}px` }"
