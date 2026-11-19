@@ -16,15 +16,95 @@ const mapOpen = ref(false)
 const mini = computed(() => !desktop.value && mode.value === 'browse' && !mapOpen.value)
 // The map grows over the full-screen panel first; only then does the panel become a bottom sheet.
 const GROW_MS = 300
+const SNAP_MS = 250
 const growing = ref(false)
 watch(mini, (m) => {
   growing.value = !m
-  if (!m) setTimeout(() => (growing.value = false), GROW_MS)
+  if (!m) setTimeout(() => {
+    growing.value = false
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    nextTick(() => sheet.value?.animate([{ transform: 'translateY(100%)' }, { transform: 'none' }], { duration: SNAP_MS, easing: 'ease-out' }))
+  }, GROW_MS)
 })
 const full = computed(() => mini.value || growing.value)
+
+// Drawer (mobile, map open), three positions: low (map takes the whole screen), half, full (sheet takes it).
+// Moved by dragging or tapping the grabber; a tap on the map toggles low.
+const SNAPS = ['low', 'half', 'full'] as const
+type Snap = typeof SNAPS[number]
+const LOW_PX = 96 // grabber + one header row; matches max-h-24 below
+const snap = ref<Snap>('half')
+const pulledUp = computed(() => snap.value === 'full')
+const drag = ref<number | null>(null) // live sheet height in px while a finger is on the grabber
+const snapping = ref(false) // height transition on, only while the sheet settles after a release
+const instant = ref(false)
+const tall = computed(() => full.value || pulledUp.value)
+const low = computed(() => snap.value === 'low' && !full.value)
+
+function settle(to: Snap) {
+  drag.value = null
+  snapping.value = true
+  snap.value = to
+  setTimeout(() => {
+    snapping.value = false
+    // The list pulled all the way up is the home screen: swap to it once the sheet has arrived.
+    if (!pulledUp.value || mode.value !== 'browse') return
+    instant.value = true
+    mapOpen.value = false
+    snap.value = 'half'
+    setTimeout(() => (instant.value = false), 50)
+  }, SNAP_MS)
+}
+function onMapTap() {
+  if (!desktop.value && !full.value) settle(low.value ? 'half' : 'low')
+}
+
+let startY = 0
+let startH = 0
+let dragged = false
+function onGrab(e: PointerEvent) {
+  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  startY = e.clientY
+  startH = sheet.value!.offsetHeight
+  dragged = false
+  snapping.value = false
+}
+function onDrag(e: PointerEvent) {
+  if (!(e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) return
+  const dy = startY - e.clientY
+  if (!dragged && Math.abs(dy) < 6) return // movement threshold, so a tap is not a drag
+  dragged = true
+  drag.value = Math.min(window.innerHeight, Math.max(LOW_PX - 24, startH + dy))
+}
+function onRelease(e: PointerEvent) {
+  if (!dragged) return
+  const dy = startY - e.clientY
+  const from = SNAPS.indexOf(snap.value)
+  let to = from
+  if (Math.abs(dy) >= 40) {
+    // Land on the position nearest to where the finger let go; a short flick still moves one step.
+    const heights = [LOW_PX, window.innerHeight * 0.56, window.innerHeight]
+    const h = drag.value ?? startH
+    to = heights.indexOf(heights.reduce((a, b) => Math.abs(b - h) < Math.abs(a - h) ? b : a))
+    if (to === from) to = Math.min(2, Math.max(0, from + Math.sign(dy)))
+  }
+  settle(SNAPS[to]!)
+  // A mouse drag also ends in a click, fired before this timer; touch drags fire none.
+  setTimeout(() => (dragged = false))
+}
+// Tap and keyboard: the same control without the gesture.
+function onTap() {
+  if (!dragged) settle(snap.value === 'half' ? 'full' : 'half')
+}
+
+// Map padding follows the resting sheet only: not the finger, and not a sheet that covers the map.
+const padBottom = ref(0)
+watch(sheetH, (h) => {
+  if (drag.value == null && !pulledUp.value) padBottom.value = Math.round(h)
+})
 const padding = computed(() => desktop.value
   ? { left: 432, bottom: 0 }
-  : { left: 0, bottom: full.value ? 0 : Math.round(sheetH.value) })
+  : { left: 0, bottom: full.value ? 0 : padBottom.value })
 const selectedId = ref<string | null>(null)
 const center = ref<{ lat: number, lng: number } | null>(null)
 
@@ -45,7 +125,10 @@ function startReport(at?: { lat: number, lng: number }) {
 }
 
 // Views swap inside the panel; move focus with them so keyboard/screen-reader users aren't dropped on <body>.
-watch(mode, () => nextTick(() => sheet.value?.focus()))
+watch(mode, () => {
+  if (snap.value !== 'half') settle('half')
+  nextTick(() => sheet.value?.focus())
+})
 
 function finishReport(i: Incident) {
   select(i.id)
@@ -56,12 +139,12 @@ function finishReport(i: Incident) {
   <div class="relative h-dvh w-full overflow-hidden bg-default">
     <!-- Map: full screen, or a floating thumbnail on the mobile home. Sizes are explicit so they can transition. -->
     <div
-      class="absolute overflow-hidden transition-all ease-out motion-reduce:transition-none"
+      class="absolute isolate overflow-hidden transition-all ease-out motion-reduce:transition-none"
       :class="[
         mini ? 'bottom-4 right-4 h-36 w-28 rounded-2xl shadow-lg ring-1 ring-black/10 [&_.maplibregl-control-container]:hidden' : 'bottom-0 right-0 size-full',
         full && 'z-10'
       ]"
-      :style="{ transitionDuration: `${GROW_MS}ms` }"
+      :style="{ transitionDuration: `${instant ? 0 : GROW_MS}ms` }"
     >
       <MapView
         ref="map"
@@ -72,6 +155,7 @@ function finishReport(i: Incident) {
         :overview="mini"
         @select="select"
         @center="center = $event"
+        @tap="onMapTap"
       />
       <button
         v-if="mini"
@@ -91,7 +175,7 @@ function finishReport(i: Incident) {
 
     <!-- Top bar (mobile, over the open map) -->
     <header
-      v-if="!full"
+      v-if="!tall"
       class="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between gap-3 p-3 lg:hidden"
     >
       <NuxtLink
@@ -117,9 +201,29 @@ function finishReport(i: Incident) {
       ref="sheet"
       tabindex="-1"
       class="surface-float outline-none absolute inset-x-0 bottom-0 flex flex-col rounded-b-none! lg:inset-y-4 lg:left-4 lg:right-auto lg:max-h-none lg:w-[400px] lg:rounded-b-2xl!"
-      :class="full ? 'h-dvh rounded-none! shadow-none!' : 'max-h-[56dvh] max-lg:animate-[sheet-in_.25s_ease-out] motion-reduce:animate-none'"
+      :class="[
+        tall ? 'h-dvh max-h-dvh rounded-none! shadow-none!' : low ? 'max-h-24 overflow-hidden' : 'max-h-[56dvh]',
+        snapping && 'transition-[height,max-height] duration-250 ease-out motion-reduce:transition-none'
+      ]"
+      :style="drag == null ? undefined : { height: `${drag}px`, maxHeight: `${drag}px` }"
       aria-label="Panel de reportes"
     >
+      <!-- Grabber: drag, tap or press Enter to pull the sheet over the whole screen and back. -mb-4 lets its 44px hit area overlap the padding below. -->
+      <button
+        v-if="!full"
+        type="button"
+        class="relative z-10 -mb-4 flex h-11 w-full shrink-0 cursor-grab touch-none justify-center pt-2 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary lg:hidden"
+        :aria-label="pulledUp ? 'Bajar el panel para ver el mapa' : low ? 'Subir el panel' : 'Subir el panel a pantalla completa'"
+        :aria-expanded="!low"
+        @pointerdown="onGrab"
+        @pointermove="onDrag"
+        @pointerup="onRelease"
+        @pointercancel="settle(snap)"
+        @click="onTap"
+      >
+        <span class="h-1 w-9 rounded-full bg-(--ui-border-accented)" />
+      </button>
+
       <ReportForm
         v-if="mode === 'report'"
         :center="center"
@@ -218,7 +322,10 @@ function finishReport(i: Incident) {
 
       <!-- Browse -->
       <template v-else>
-        <div class="space-y-5 p-6 pb-4">
+        <div
+          v-show="!low"
+          class="space-y-5 p-6 pb-4"
+        >
           <div :class="full ? '' : 'hidden lg:block'">
             <AppLogo />
           </div>
@@ -240,7 +347,10 @@ function finishReport(i: Incident) {
           />
         </div>
 
-        <div class="flex items-baseline justify-between border-t border-default px-6 pb-2 pt-4">
+        <div
+          class="flex items-baseline justify-between px-6 pb-2 pt-4"
+          :class="low ? '' : 'border-t border-default'"
+        >
           <h2 class="font-semibold text-highlighted">
             Fugas activas
           </h2>
@@ -249,6 +359,7 @@ function finishReport(i: Incident) {
 
         <!-- pb-44: lets the last rows scroll clear of the floating mini map. -->
         <ul
+          v-show="!low"
           class="min-h-0 flex-1 overflow-y-auto px-3"
           :class="mini ? 'pb-44' : 'pb-3'"
         >

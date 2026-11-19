@@ -17,7 +17,7 @@ const props = defineProps<{
   /** Thumbnail mode: zoom out to show every open incident; restores the previous view when turned off. */
   overview?: boolean
 }>()
-const emit = defineEmits<{ select: [id: string], center: [pos: { lat: number, lng: number }] }>()
+const emit = defineEmits<{ select: [id: string], center: [pos: { lat: number, lng: number }], tap: [] }>()
 
 const container = ref<HTMLDivElement>()
 const moving = ref(false)
@@ -108,6 +108,10 @@ onMounted(async () => {
   map.on('click', DOT_LAYERS, (e: MapLayerMouseEvent) => {
     const id = e.features?.[0]?.properties?.id
     if (id && !props.picking) emit('select', id)
+  })
+  // A tap on the map itself, not on an incident.
+  map.on('click', (e) => {
+    if (!map.queryRenderedFeatures(e.point, { layers: DOT_LAYERS }).length) emit('tap')
   })
   const cursor = (c: string) => () => (map.getCanvas().style.cursor = props.picking ? '' : c)
   map.on('mouseenter', DOT_LAYERS, cursor('pointer'))
