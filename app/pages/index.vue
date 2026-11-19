@@ -153,6 +153,7 @@ function finishReport(leakId: string) {
         :picking="mode === 'report'"
         :padding="padding"
         :overview="mini"
+        locate
         @select="select"
         @center="center = $event"
         @tap="onMapTap"
