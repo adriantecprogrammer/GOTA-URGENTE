@@ -27,11 +27,26 @@ export interface CreateReportResult {
   leak: Leak
 }
 
-// The API dedupes confirmations per device; this id is that device.
+// One device = one vote per leak: the API rejects a second report of the same leak from this id with 409.
 const deviceId = useStorage('gota:device', () => crypto.randomUUID())
+
+// Mirror of what the API already knows, so the UI can say "ya la reportaste" before the user fills the form.
+// ponytail: local only (lost if storage is cleared, like the device id itself); the API stays the source of truth.
+const reported = useStorage<string[]>('gota:reported', [])
+export const hasReported = (leakId: string) => reported.value.includes(leakId)
+const remember = (leakId: string) => !hasReported(leakId) && reported.value.push(leakId)
 
 export const reportsService = (http: typeof $fetch) => ({
   /** 409 if this device already reported the leak or the leak is closed. */
-  create: (input: CreateReportInput) =>
-    http<CreateReportResult>('/reports', { method: 'POST', body: { ...input, device_id: deviceId.value } })
+  async create(input: CreateReportInput) {
+    try {
+      const r = await http<CreateReportResult>('/reports', { method: 'POST', body: { ...input, device_id: deviceId.value } })
+      remember(r.leak_id)
+      return r
+    } catch (e) {
+      // 409 on an explicit confirmation: this device can't vote for that leak again.
+      if (input.leak_id && (e as { status?: number }).status === 409) remember(input.leak_id)
+      throw e
+    }
+  }
 })
