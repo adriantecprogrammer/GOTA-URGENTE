@@ -2,6 +2,10 @@
 import * as maplibregl from 'maplibre-gl'
 import type { ExpressionSpecification, GeoJSONSource, MapLayerMouseEvent } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
+// MapLibre v6 looks for its worker next to the bundle chunk, where Vite never copies it; ?url emits it as an asset.
+import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
+
+maplibregl.setWorkerUrl(workerUrl)
 
 const props = defineProps<{
   incidents: Incident[]

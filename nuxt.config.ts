@@ -14,9 +14,6 @@ export default defineNuxtConfig({
 
   compatibilityDate: '2026-06-30',
 
-  // MapLibre v6 loads its worker via import.meta.url; pre-bundling breaks that path.
-  vite: { optimizeDeps: { exclude: ['maplibre-gl'] } },
-
   eslint: {
     config: {
       stylistic: { commaDangle: 'never', braceStyle: '1tbs' }
