@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { useDebounceFn } from '@vueuse/core'
 import type { NearbyResult } from '~/services/leaks'
-import type { CreateReportResult } from '~/services/reports'
+import { hasReported, type CreateReportResult } from '~/services/reports'
 
 interface Point { lat: number, lng: number }
 
-const props = defineProps<{ center: Point | null }>()
+/** `leakId`: opened from "Yo también la veo", so the form starts confirming that leak. */
+const props = defineProps<{ center: Point | null, leakId?: string }>()
 const emit = defineEmits<{ cancel: [], locate: [pos: Point], done: [leakId: string] }>()
 
 const { $api } = useNuxtApp()
@@ -25,11 +26,23 @@ const location = computed(() => gps.value && props.center && distanceM(gps.value
   ? { accuracy: gps.value.accuracy, source: 'gps' as const }
   : { source: 'manual' as const })
 
-// Duplicate pre-check. `target`: leak id to confirm, NEW for "Es otra fuga", undefined lets the server decide.
+// Duplicate pre-check. `target`: leak id to confirm, NEW for "Es otra fuga", undefined = nothing nearby (new leak).
 const NEW = 'new'
 const nearby = ref<NearbyResult>()
-const target = ref<string>()
+const target = ref<string | undefined>(props.leakId)
+// Once the person picks, pin moves don't override their choice.
+const picked = ref(!!props.leakId)
 const candidates = computed(() => nearby.value ? [nearby.value.exact, ...nearby.value.ambiguous].filter(c => !!c) : [])
+const confirming = computed(() => !!target.value && target.value !== NEW)
+// Leaks around: the person must say whether it's one of them (the ambiguous band is decided by them, not by a radius).
+const mustChoose = computed(() => candidates.value.length > 0 && !target.value)
+// A confirmation only asks for severity, prefilled with the leak's: "ya no es goteo, ahora es chorro".
+// Prefill follows the chosen leak until the person touches the severity themselves.
+const severityTouched = ref(false)
+watch([target, candidates], ([id]) => {
+  const c = candidates.value.find(c => c.id === id)
+  if (c && !severityTouched.value) severity.value = c.max_severity
+})
 
 let seq = 0
 const lookup = useDebounceFn(async (p: Point) => {
@@ -41,8 +54,13 @@ const lookup = useDebounceFn(async (p: Point) => {
   if (n !== seq) return // the pin moved again meanwhile
   address.value = a ?? fmtCoords(p)
   nearby.value = near
-  target.value = near?.exact?.id
+  if (!picked.value) target.value = near?.exact && !hasReported(near.exact.id) ? near.exact.id : undefined
 }, 500)
+
+function pick(id: string) {
+  picked.value = true
+  target.value = id
+}
 watch(() => props.center, (p) => {
   if (!p) return
   address.value = undefined
@@ -84,19 +102,25 @@ async function submit() {
   if (!props.center || !severity.value) return
   sending.value = true
   try {
-    const photoKey = photo.value ? (await $api.uploads.photo(await compress(photo.value))).photo_key : undefined
+    // A confirmation carries no photo or note: the leak already has them.
+    const photoKey = !confirming.value && photo.value ? (await $api.uploads.photo(await compress(photo.value))).photo_key : undefined
     result.value = await $api.reports.create({
       ...props.center,
       ...location.value,
       severity: severity.value,
       photo_key: photoKey,
-      note: note.value.trim() || undefined,
-      leak_id: target.value === NEW ? undefined : target.value,
+      note: (!confirming.value && note.value.trim()) || undefined,
+      leak_id: confirming.value ? target.value : undefined,
       force_new: target.value === NEW || undefined
     })
     refreshNuxtData('leaks')
   } catch (e) {
-    toast.add({ title: 'No se pudo enviar el reporte', description: apiErrorMessage(e), color: 'error' })
+    toast.add({ title: confirming.value ? 'No se pudo confirmar' : 'No se pudo enviar el reporte', description: apiErrorMessage(e), color: 'error' })
+    // Already voted (409): the card now shows "Ya la reportaste"; let them pick again.
+    if (confirming.value && hasReported(target.value!)) {
+      target.value = undefined
+      picked.value = false
+    }
   } finally {
     sending.value = false
   }
@@ -107,6 +131,10 @@ function reset() {
   severity.value = undefined
   photo.value = null
   note.value = ''
+  severityTouched.value = false
+  target.value = undefined
+  picked.value = false
+  if (props.center) lookup(props.center)
 }
 </script>
 
@@ -125,7 +153,7 @@ function reset() {
     </div>
     <div class="space-y-1.5">
       <h2 class="text-2xl font-bold tracking-tight text-highlighted">
-        Reporte enviado
+        {{ result.action === 'confirmed' ? 'Fuga confirmada' : 'Reporte enviado' }}
       </h2>
       <p class="text-muted">
         Folio <span class="font-medium text-highlighted uppercase tabular-nums">{{ result.report_id.slice(0, 8) }}</span>. Gracias por cuidar el agua de tu colonia.
@@ -138,8 +166,8 @@ function reset() {
         <UrgencyScore :leak="result.leak" />
       </div>
       <p class="text-sm text-muted">
-        <template v-if="result.leak.report_count > 1">
-          Tu reporte se sumó a <b class="text-highlighted">{{ result.leak.report_count - 1 }} {{ result.leak.report_count === 2 ? 'reporte' : 'reportes' }}</b> de la misma fuga, así que subió su prioridad.
+        <template v-if="result.action === 'confirmed'">
+          Ya son <b class="text-highlighted">{{ result.leak.report_count }} personas</b> reportando esta fuga, así que subió su prioridad.
         </template>
         <template v-else>
           Eres la primera persona en reportarla. Si alguien más la reporta, su prioridad subirá.
@@ -185,7 +213,7 @@ function reset() {
         @click="cancel"
       />
       <h2 class="text-xl font-bold tracking-tight text-highlighted">
-        Reportar fuga
+        {{ confirming ? 'Confirmar fuga' : 'Reportar fuga' }}
       </h2>
     </header>
 
@@ -242,35 +270,40 @@ function reset() {
         />
       </section>
 
-      <!-- 1b. Duplicates: confirming an existing leak raises its priority instead of splitting reports. -->
+      <!-- 1b. Duplicates: asked BEFORE severity/photo, so nobody fills a form only to learn it already exists. -->
       <fieldset
         v-if="candidates.length"
         class="space-y-3"
       >
         <legend class="mb-1 text-base font-semibold text-highlighted">
-          {{ nearby?.exact ? 'Ya se reportó una fuga aquí' : '¿Es alguna de estas fugas?' }}
+          {{ nearby?.exact ? 'Ya se reportó una fuga aquí' : 'Hay fugas reportadas cerca' }}
         </legend>
         <p class="mb-3 text-sm text-muted">
-          Confirmarla sube su prioridad para que la atiendan antes.
+          ¿Es la misma que ves? Confirmarla toma un toque y sube su prioridad.
         </p>
         <label
           v-for="c in candidates"
           :key="c.id"
-          class="flex cursor-pointer items-center gap-3 rounded-xl p-3 ring-2 transition-colors has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-gota-500"
-          :class="target === c.id ? 'bg-default ring-inverted' : 'bg-muted ring-transparent hover:bg-elevated'"
+          class="flex items-center gap-3 rounded-xl p-3 ring-2 transition-colors has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-gota-500"
+          :class="[
+            target === c.id ? 'bg-default ring-inverted' : 'bg-muted ring-transparent',
+            hasReported(c.id) ? 'opacity-60' : 'cursor-pointer hover:bg-elevated'
+          ]"
         >
           <input
-            v-model="target"
             type="radio"
             name="target"
             :value="c.id"
+            :checked="target === c.id"
+            :disabled="hasReported(c.id)"
             class="sr-only"
+            @change="pick(c.id)"
           >
           <img
             v-if="c.photo_url"
             :src="c.photo_url"
             alt=""
-            class="size-11 shrink-0 rounded-lg object-cover"
+            class="size-14 shrink-0 rounded-lg object-cover"
           >
           <SeverityIcon
             v-else
@@ -278,8 +311,8 @@ function reset() {
             class="bg-default!"
           />
           <span class="min-w-0 flex-1">
-            <span class="block font-semibold text-highlighted">Es esta · {{ SEVERITY[c.max_severity].label }}</span>
-            <span class="block text-sm text-muted">{{ c.report_count }} {{ c.report_count === 1 ? 'reporte' : 'reportes' }} · a {{ Math.round(c.distance_m) }} m</span>
+            <span class="block font-semibold text-highlighted">{{ hasReported(c.id) ? 'Ya la reportaste' : 'Sí, es esta' }}</span>
+            <span class="block text-sm text-muted">{{ SEVERITY[c.max_severity].label }} · {{ c.report_count }} {{ c.report_count === 1 ? 'reporte' : 'reportes' }} · a {{ Math.round(c.distance_m) }} m</span>
           </span>
           <UIcon
             v-if="target === c.id"
@@ -292,13 +325,17 @@ function reset() {
           :class="target === NEW ? 'bg-default ring-inverted' : 'bg-muted ring-transparent hover:bg-elevated'"
         >
           <input
-            v-model="target"
             type="radio"
             name="target"
             :value="NEW"
+            :checked="target === NEW"
             class="sr-only"
+            @change="pick(NEW)"
           >
-          <span class="flex-1 font-semibold text-highlighted">Es otra fuga</span>
+          <span class="min-w-0 flex-1">
+            <span class="block font-semibold text-highlighted">No, es otra fuga</span>
+            <span class="block text-sm text-muted">La reportas como nueva, con foto</span>
+          </span>
           <UIcon
             v-if="target === NEW"
             name="i-lucide-circle-check"
@@ -310,7 +347,11 @@ function reset() {
       <!-- 2. Severity -->
       <fieldset class="space-y-3">
         <legend class="mb-3 text-base font-semibold text-highlighted">
-          ¿Cuánta agua se pierde?
+          {{ confirming ? '¿Cuánta agua se pierde ahora?' : '¿Cuánta agua se pierde?' }}
+          <span
+            v-if="confirming"
+            class="block text-sm font-normal text-muted"
+          >Si empeoró, cámbialo</span>
         </legend>
         <label
           v-for="(s, key) in SEVERITY"
@@ -325,6 +366,7 @@ function reset() {
             :value="key"
             class="sr-only"
             required
+            @change="severityTouched = true"
           >
           <SeverityIcon
             :severity="key"
@@ -342,8 +384,11 @@ function reset() {
         </label>
       </fieldset>
 
-      <!-- 3. Photo -->
-      <section class="space-y-3">
+      <!-- 3. Photo (new leaks only) -->
+      <section
+        v-if="!confirming"
+        class="space-y-3"
+      >
         <div class="flex items-baseline justify-between">
           <h3 class="text-base font-semibold text-highlighted">
             Foto
@@ -360,8 +405,11 @@ function reset() {
         />
       </section>
 
-      <!-- 4. Notes -->
-      <section class="space-y-3">
+      <!-- 4. Notes (new leaks only) -->
+      <section
+        v-if="!confirming"
+        class="space-y-3"
+      >
         <div class="flex items-baseline justify-between">
           <h3 class="text-base font-semibold text-highlighted">
             Referencias
@@ -387,8 +435,8 @@ function reset() {
         size="xl"
         color="primary"
         :loading="sending"
-        :disabled="!severity || !center || nearby?.must_drag_pin"
-        :label="severity ? 'Enviar reporte' : 'Elige cuánta agua se pierde'"
+        :disabled="!severity || !center || nearby?.must_drag_pin || mustChoose"
+        :label="mustChoose ? 'Dinos si es la misma fuga' : !severity ? 'Elige cuánta agua se pierde' : confirming ? 'Confirmar esta fuga' : 'Enviar reporte'"
       />
     </footer>
   </form>

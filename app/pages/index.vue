@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useElementSize, useMediaQuery } from '@vueuse/core'
+import { hasReported } from '~/services/reports'
 
 const { data: leaks, error, status: loadStatus, refresh } = useLeaks()
 const map = useTemplateRef('map')
@@ -119,9 +120,12 @@ function select(id: string) {
   if (i) map.value?.flyTo(i)
 }
 
-function startReport(at?: { lat: number, lng: number }) {
+// Set when the form is opened to confirm a specific leak ("Yo también la veo").
+const confirmId = ref<string>()
+function startReport(leak?: { id: string, lat: number, lng: number }) {
+  confirmId.value = leak?.id
   mode.value = 'report'
-  if (at) map.value?.flyTo(at, 17)
+  if (leak) map.value?.flyTo(leak, 17)
 }
 
 // Views swap inside the panel; move focus with them so keyboard/screen-reader users aren't dropped on <body>.
@@ -228,6 +232,7 @@ function finishReport(leakId: string) {
       <ReportForm
         v-if="mode === 'report'"
         :center="center"
+        :leak-id="confirmId"
         @cancel="mode = 'browse'"
         @locate="map?.flyTo($event, 17)"
         @done="finishReport"
@@ -307,17 +312,30 @@ function finishReport(leakId: string) {
           >
         </div>
         <footer class="space-y-2 border-t border-default p-4">
-          <UButton
-            block
-            size="xl"
-            color="primary"
-            icon="i-lucide-hand"
-            label="Yo también la veo"
-            @click="startReport(selected)"
-          />
-          <p class="text-center text-xs text-muted">
-            Confirmarla sube su prioridad
+          <!-- One vote per device: the API would answer 409, so say it up front. -->
+          <p
+            v-if="hasReported(selected.id)"
+            class="flex items-center justify-center gap-2 rounded-xl bg-muted p-3 font-medium text-highlighted"
+          >
+            <UIcon
+              name="i-lucide-circle-check"
+              class="size-5"
+            />
+            Ya reportaste esta fuga. ¡Gracias!
           </p>
+          <template v-else>
+            <UButton
+              block
+              size="xl"
+              color="primary"
+              icon="i-lucide-hand"
+              label="Yo también la veo"
+              @click="startReport(selected)"
+            />
+            <p class="text-center text-xs text-muted">
+              Confirmarla sube su prioridad
+            </p>
+          </template>
         </footer>
       </div>
 
