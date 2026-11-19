@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { useDebounceFn } from '@vueuse/core'
+import type { NearbyResult } from '~/services/leaks'
+import type { CreateReportResult } from '~/services/reports'
 
-const props = defineProps<{ center: { lat: number, lng: number } | null }>()
-const emit = defineEmits<{ cancel: [], locate: [pos: { lat: number, lng: number }], done: [incident: Incident] }>()
+interface Point { lat: number, lng: number }
 
-const { incidents, addReport } = useReports()
+const props = defineProps<{ center: Point | null }>()
+const emit = defineEmits<{ cancel: [], locate: [pos: Point], done: [leakId: string] }>()
+
+const { $api } = useNuxtApp()
 const toast = useToast()
 
 const severity = ref<Severity>()
@@ -13,22 +17,37 @@ const note = ref('')
 const address = ref<string>()
 const locating = ref(false)
 const sending = ref(false)
-const result = ref<Incident>()
+const result = ref<CreateReportResult>()
 
-// Existing open incident the new report would join → tell the citizen before they submit.
-const nearby = computed(() => props.center && incidents.value.find(i =>
-  i.status !== 'resuelto' && distanceM(i.reports[0]!, props.center!) <= CLUSTER_RADIUS_M))
+// The pin counts as GPS only while it sits where the phone put it; once the map is dragged it's manual.
+const gps = ref<Point & { accuracy: number }>()
+const location = computed(() => gps.value && props.center && distanceM(gps.value, props.center) < 2
+  ? { accuracy: gps.value.accuracy, source: 'gps' as const }
+  : { source: 'manual' as const })
 
-// ponytail: public Nominatim, fine for demo traffic (1 req/s policy); proxy + cache it server-side for production.
-const geocode = useDebounceFn(async (p: { lat: number, lng: number }) => {
-  address.value = undefined
-  const r = await $fetch<{ address?: Record<string, string> }>('https://nominatim.openstreetmap.org/reverse', {
-    query: { 'format': 'jsonv2', 'lat': p.lat, 'lon': p.lng, 'zoom': 18, 'accept-language': 'es' }
-  }).catch(() => null)
-  const a = r?.address
-  address.value = a?.road ? [`${a.road} ${a.house_number ?? ''}`.trim(), a.suburb ?? a.neighbourhood].filter(Boolean).join(', ') : fmtCoords(p)
+// Duplicate pre-check. `target`: leak id to confirm, NEW for "Es otra fuga", undefined lets the server decide.
+const NEW = 'new'
+const nearby = ref<NearbyResult>()
+const target = ref<string>()
+const candidates = computed(() => nearby.value ? [nearby.value.exact, ...nearby.value.ambiguous].filter(c => !!c) : [])
+
+let seq = 0
+const lookup = useDebounceFn(async (p: Point) => {
+  const n = ++seq
+  const [a, near] = await Promise.all([
+    reverseGeocode(p),
+    $api.leaks.nearby({ ...p, ...location.value }).catch(() => undefined)
+  ])
+  if (n !== seq) return // the pin moved again meanwhile
+  address.value = a ?? fmtCoords(p)
+  nearby.value = near
+  target.value = near?.exact?.id
 }, 500)
-watch(() => props.center, p => p && geocode(p), { immediate: true })
+watch(() => props.center, (p) => {
+  if (!p) return
+  address.value = undefined
+  lookup(p)
+}, { immediate: true })
 
 function useMyLocation() {
   if (!navigator.geolocation) return toast.add({ title: 'Tu navegador no permite ubicación', color: 'error' })
@@ -36,7 +55,8 @@ function useMyLocation() {
   navigator.geolocation.getCurrentPosition(
     (pos) => {
       locating.value = false
-      emit('locate', { lat: pos.coords.latitude, lng: pos.coords.longitude })
+      gps.value = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy }
+      emit('locate', gps.value)
     },
     () => {
       locating.value = false
@@ -51,30 +71,42 @@ function cancel() {
   if (!(severity.value || photo.value || note.value) || confirm('¿Descartar este reporte?')) emit('cancel')
 }
 
-async function toDataUrl(file: File, max = 1024) {
+/** The API takes up to 5 MB but asks for ~800 px / ~200 KB. */
+async function compress(file: File, max = 800) {
   const bmp = await createImageBitmap(file)
   const k = Math.min(1, max / Math.max(bmp.width, bmp.height))
-  const c = Object.assign(document.createElement('canvas'), { width: bmp.width * k, height: bmp.height * k })
+  const c = new OffscreenCanvas(Math.round(bmp.width * k), Math.round(bmp.height * k))
   c.getContext('2d')!.drawImage(bmp, 0, 0, c.width, c.height)
-  return c.toDataURL('image/jpeg', 0.75)
+  return c.convertToBlob({ type: 'image/jpeg', quality: 0.7 })
 }
 
 async function submit() {
   if (!props.center || !severity.value) return
   sending.value = true
   try {
-    result.value = addReport({
+    const photoKey = photo.value ? (await $api.uploads.photo(await compress(photo.value))).photo_key : undefined
+    result.value = await $api.reports.create({
       ...props.center,
+      ...location.value,
       severity: severity.value,
-      address: address.value,
+      photo_key: photoKey,
       note: note.value.trim() || undefined,
-      photo: photo.value ? await toDataUrl(photo.value) : undefined
+      leak_id: target.value === NEW ? undefined : target.value,
+      force_new: target.value === NEW || undefined
     })
-  } catch {
-    toast.add({ title: 'No se pudo guardar el reporte', description: 'Intenta con una foto más ligera.', color: 'error' })
+    refreshNuxtData('leaks')
+  } catch (e) {
+    toast.add({ title: 'No se pudo enviar el reporte', description: apiErrorMessage(e), color: 'error' })
   } finally {
     sending.value = false
   }
+}
+
+function reset() {
+  result.value = undefined
+  severity.value = undefined
+  photo.value = null
+  note.value = ''
 }
 </script>
 
@@ -96,21 +128,24 @@ async function submit() {
         Reporte enviado
       </h2>
       <p class="text-muted">
-        Folio <span class="font-medium text-highlighted tabular-nums">{{ result.reports.at(-1)!.id }}</span>. Gracias por cuidar el agua de tu colonia.
+        Folio <span class="font-medium text-highlighted uppercase tabular-nums">{{ result.report_id.slice(0, 8) }}</span>. Gracias por cuidar el agua de tu colonia.
       </p>
     </div>
 
     <div class="space-y-3 rounded-xl bg-muted p-4">
       <div class="flex items-center justify-between gap-3">
-        <span class="font-semibold text-highlighted">Prioridad {{ LEVEL[result.level].label.toLowerCase() }}</span>
-        <UrgencyScore :incident="result" />
+        <span class="font-semibold text-highlighted">Prioridad {{ LEVEL[result.leak.urgency_level].label.toLowerCase() }}</span>
+        <UrgencyScore :leak="result.leak" />
       </div>
       <p class="text-sm text-muted">
-        <template v-if="result.reports.length > 1">
-          Tu reporte se sumó a <b class="text-highlighted">{{ result.reports.length - 1 }} {{ result.reports.length === 2 ? 'reporte' : 'reportes' }}</b> de la misma fuga, así que subió su prioridad.
+        <template v-if="result.leak.report_count > 1">
+          Tu reporte se sumó a <b class="text-highlighted">{{ result.leak.report_count - 1 }} {{ result.leak.report_count === 2 ? 'reporte' : 'reportes' }}</b> de la misma fuga, así que subió su prioridad.
         </template>
         <template v-else>
           Eres la primera persona en reportarla. Si alguien más la reporta, su prioridad subirá.
+        </template>
+        <template v-if="result.is_recurrent">
+          Aquí ya se había reparado una fuga: la marcamos como reincidente.
         </template>
       </p>
     </div>
@@ -121,7 +156,7 @@ async function submit() {
         size="xl"
         color="primary"
         label="Ver en el mapa"
-        @click="emit('done', result)"
+        @click="emit('done', result.leak_id)"
       />
       <UButton
         block
@@ -129,7 +164,7 @@ async function submit() {
         color="neutral"
         variant="ghost"
         label="Hacer otro reporte"
-        @click="result = undefined; severity = undefined; photo = null; note = ''"
+        @click="reset"
       />
     </div>
   </div>
@@ -191,14 +226,86 @@ async function submit() {
           @click="useMyLocation"
         />
         <UAlert
-          v-if="nearby"
-          color="info"
+          v-if="nearby?.must_drag_pin"
+          color="warning"
           variant="subtle"
-          icon="i-lucide-users"
-          :title="`Ya hay ${nearby.reports.length} ${nearby.reports.length === 1 ? 'reporte' : 'reportes'} aquí`"
-          description="Confirmarla sube su prioridad para que la atiendan antes."
+          icon="i-lucide-crosshair"
+          title="Tu GPS es impreciso"
+          description="Mueve el mapa para dejar el pin justo sobre la fuga."
+        />
+        <UAlert
+          v-if="nearby?.resolved"
+          color="neutral"
+          variant="subtle"
+          icon="i-lucide-history"
+          description="Aquí ya se reparó una fuga antes. Tu reporte avisará que volvió a aparecer."
         />
       </section>
+
+      <!-- 1b. Duplicates: confirming an existing leak raises its priority instead of splitting reports. -->
+      <fieldset
+        v-if="candidates.length"
+        class="space-y-3"
+      >
+        <legend class="mb-1 text-base font-semibold text-highlighted">
+          {{ nearby?.exact ? 'Ya se reportó una fuga aquí' : '¿Es alguna de estas fugas?' }}
+        </legend>
+        <p class="mb-3 text-sm text-muted">
+          Confirmarla sube su prioridad para que la atiendan antes.
+        </p>
+        <label
+          v-for="c in candidates"
+          :key="c.id"
+          class="flex cursor-pointer items-center gap-3 rounded-xl p-3 ring-2 transition-colors has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-gota-500"
+          :class="target === c.id ? 'bg-default ring-inverted' : 'bg-muted ring-transparent hover:bg-elevated'"
+        >
+          <input
+            v-model="target"
+            type="radio"
+            name="target"
+            :value="c.id"
+            class="sr-only"
+          >
+          <img
+            v-if="c.photo_url"
+            :src="c.photo_url"
+            alt=""
+            class="size-11 shrink-0 rounded-lg object-cover"
+          >
+          <SeverityIcon
+            v-else
+            :severity="c.max_severity"
+            class="bg-default!"
+          />
+          <span class="min-w-0 flex-1">
+            <span class="block font-semibold text-highlighted">Es esta · {{ SEVERITY[c.max_severity].label }}</span>
+            <span class="block text-sm text-muted">{{ c.report_count }} {{ c.report_count === 1 ? 'reporte' : 'reportes' }} · a {{ Math.round(c.distance_m) }} m</span>
+          </span>
+          <UIcon
+            v-if="target === c.id"
+            name="i-lucide-circle-check"
+            class="size-5 text-highlighted"
+          />
+        </label>
+        <label
+          class="flex cursor-pointer items-center gap-3 rounded-xl p-3 ring-2 transition-colors has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-gota-500"
+          :class="target === NEW ? 'bg-default ring-inverted' : 'bg-muted ring-transparent hover:bg-elevated'"
+        >
+          <input
+            v-model="target"
+            type="radio"
+            name="target"
+            :value="NEW"
+            class="sr-only"
+          >
+          <span class="flex-1 font-semibold text-highlighted">Es otra fuga</span>
+          <UIcon
+            v-if="target === NEW"
+            name="i-lucide-circle-check"
+            class="size-5 text-highlighted"
+          />
+        </label>
+      </fieldset>
 
       <!-- 2. Severity -->
       <fieldset class="space-y-3">
@@ -280,7 +387,7 @@ async function submit() {
         size="xl"
         color="primary"
         :loading="sending"
-        :disabled="!severity || !center"
+        :disabled="!severity || !center || nearby?.must_drag_pin"
         :label="severity ? 'Enviar reporte' : 'Elige cuánta agua se pierde'"
       />
     </footer>

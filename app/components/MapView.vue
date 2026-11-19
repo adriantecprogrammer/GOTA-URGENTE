@@ -1,21 +1,25 @@
 <script setup lang="ts">
+import { StorageSerializers, useStorage } from '@vueuse/core'
 import * as maplibregl from 'maplibre-gl'
 import type { ExpressionSpecification, GeoJSONSource, MapLayerMouseEvent } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 // MapLibre v6 looks for its worker next to the bundle chunk, where Vite never copies it; ?url emits it as an asset.
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
+import type { Leak } from '~/services/leaks'
 
 maplibregl.setWorkerUrl(workerUrl)
 
 const props = defineProps<{
-  incidents: Incident[]
+  leaks: Leak[]
   selectedId?: string | null
   /** Show a fixed center pin and emit `center` as the map moves. */
   picking?: boolean
   /** Area covered by floating UI; map center and pin sit in the visible remainder. */
   padding?: { left: number, bottom: number }
-  /** Thumbnail mode: zoom out to show every open incident; restores the previous view when turned off. */
+  /** Thumbnail mode: zoom out around the user (or to every leak if unknown); restores the previous view when turned off. */
   overview?: boolean
+  /** Ask for the user's position, open the map there and mark it. Falls back to CITY_CENTER. */
+  locate?: boolean
 }>()
 const emit = defineEmits<{ select: [id: string], center: [pos: { lat: number, lng: number }], tap: [] }>()
 
@@ -27,37 +31,79 @@ let view: { center: maplibregl.LngLatLike, zoom: number } | undefined
 // Last flyTo destination. Later camera moves (padding change, leaving overview) re-aim at it instead of
 // cancelling the flight; cleared as soon as the user moves the map themselves.
 let target: typeof view
+// Set once the user moves the map themselves; after that a late GPS fix only moves the dot, not the camera.
+let touched = false
+
+type Point = { lat: number, lng: number }
+const STREET_ZOOM = 15
+// Last known position: lets the next visit open in the right place before the GPS answers.
+const lastPos = useStorage<Point | null>('gota:me', null, undefined, { serializer: StorageSerializers.object })
+let me: Point | undefined
+let meMarker: maplibregl.Marker | undefined
+
+// ponytail: one fix per visit; use watchPosition if the dot should follow someone on the move.
+const getFix = () => new Promise<Point | null>((resolve) => {
+  if (!props.locate || !navigator.geolocation) return resolve(null)
+  navigator.geolocation.getCurrentPosition(
+    p => resolve({ lat: p.coords.latitude, lng: p.coords.longitude }),
+    () => resolve(null),
+    { enableHighAccuracy: true, timeout: 10_000, maximumAge: 60_000 }
+  )
+})
+
+function showMe(p: Point) {
+  me = lastPos.value = p
+  if (!meMarker) {
+    const el = document.createElement('div')
+    el.className = 'grid size-10 place-items-center rounded-full bg-gota-400/25'
+    el.innerHTML = '<span class="size-3.5 rounded-full bg-gota-500 ring-3 ring-white"></span>'
+    el.setAttribute('aria-label', 'Tu ubicación')
+    meMarker = new maplibregl.Marker({ element: el })
+  }
+  meMarker.setLngLat([p.lng, p.lat]).addTo(map)
+  if (touched) return
+  view = { center: [p.lng, p.lat], zoom: STREET_ZOOM }
+  if (props.overview) fitOpen()
+  else if (!target) map.jumpTo(view)
+}
 
 const RESOLVED_HEX = '#AFAFAF'
 const DOT_LAYERS = ['inc-dot']
 
 const geojson = computed(() => ({
   type: 'FeatureCollection' as const,
-  features: props.incidents.map(i => ({
+  features: props.leaks.map(i => ({
     type: 'Feature' as const,
     geometry: { type: 'Point' as const, coordinates: [i.lng, i.lat] },
     properties: {
       id: i.id,
-      count: i.reports.length,
-      color: i.status === 'resuelto' ? RESOLVED_HEX : LEVEL[i.level].hex,
-      active: i.status !== 'resuelto',
-      critical: i.level === 'critica' && i.status === 'pendiente'
+      count: i.report_count,
+      color: isOpen(i.status) ? LEVEL[i.urgency_level].hex : RESOLVED_HEX,
+      critical: i.urgency_level === 'critica' && i.status === 'pendiente'
     }
   }))
 }))
 
 onMounted(async () => {
   const el = container.value!
-  const style = await gotaMapStyle()
+  // Open where the user is: the last known position at once, otherwise wait briefly for a first fix
+  // (it has to answer a permission prompt the first time) before falling back to the city centre.
+  const fix = getFix()
+  const [style, start] = await Promise.all([
+    gotaMapStyle(),
+    props.locate ? lastPos.value ?? Promise.race([fix, new Promise<null>(r => setTimeout(r, 1500, null))]) : null
+  ])
   map = new maplibregl.Map({
     container: el,
     style,
-    center: [CITY_CENTER.lng, CITY_CENTER.lat],
-    zoom: 14,
+    center: start ? [start.lng, start.lat] : [CITY_CENTER.lng, CITY_CENTER.lat],
+    zoom: start ? STREET_ZOOM : 14,
     attributionControl: { compact: true }
   })
   map.setPadding({ top: 0, right: 0, left: 0, bottom: 0, ...props.padding })
   if (props.overview) saveViewAndFit()
+  if (start) showMe(start)
+  fix.then(p => p && showMe(p))
   // The thumbnail shrinks over a transition; keep refitting until it settles at its final size.
   map.on('resize', () => props.overview && fitOpen())
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right')
@@ -118,7 +164,10 @@ onMounted(async () => {
   map.on('mouseleave', DOT_LAYERS, cursor(''))
   map.on('movestart', (e) => {
     moving.value = true
-    if ('originalEvent' in e && e.originalEvent) target = undefined
+    if ('originalEvent' in e && e.originalEvent) {
+      target = undefined
+      touched = true
+    }
   })
   map.on('moveend', () => {
     moving.value = false
@@ -133,11 +182,11 @@ function saveViewAndFit() {
   fitOpen()
 }
 function fitOpen() {
-  const open = props.incidents.filter(i => i.status !== 'resuelto')
-  if (!open.length) return
-  const b = new maplibregl.LngLatBounds()
-  for (const i of open) b.extend([i.lng, i.lat])
   map.setPadding({ top: 0, right: 0, bottom: 0, left: 0 })
+  if (me) return map.jumpTo({ center: [me.lng, me.lat], zoom: STREET_ZOOM - 2 })
+  if (!props.leaks.length) return
+  const b = new maplibregl.LngLatBounds()
+  for (const i of props.leaks) b.extend([i.lng, i.lat])
   map.fitBounds(b, { padding: 16, animate: false })
 }
 watch(() => props.overview, (on) => {
@@ -151,7 +200,11 @@ function emitCenter() {
   emit('center', { lat: c.lat, lng: c.lng })
 }
 
-watch(geojson, data => (map?.getSource('incidents') as GeoJSONSource | undefined)?.setData(data))
+watch(geojson, (data) => {
+  (map?.getSource('incidents') as GeoJSONSource | undefined)?.setData(data)
+  // Leaks arrive after the map exists; without a user position the thumbnail frames them.
+  if (map && props.overview && !me) fitOpen()
+})
 watch(() => props.selectedId, id => map?.getLayer('inc-selected') && map.setFilter('inc-selected', ['==', ['get', 'id'], id ?? '']))
 watch(() => props.padding, p => p && !props.overview && map?.easeTo({ padding: { top: 0, right: 0, ...p }, ...target, duration: 300 }), { deep: true })
 watch(() => props.picking, p => p && map && emitCenter())

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useElementSize, useMediaQuery } from '@vueuse/core'
 
-const { incidents } = useReports()
+const { data: leaks, error, status: loadStatus, refresh } = useLeaks()
 const map = useTemplateRef('map')
 const sheet = useTemplateRef('sheet')
 // ssrWidth: gives the right answer on first render (the default is `false` until mounted).
@@ -108,9 +108,9 @@ const padding = computed(() => desktop.value
 const selectedId = ref<string | null>(null)
 const center = ref<{ lat: number, lng: number } | null>(null)
 
-const active = computed(() => incidents.value.filter(i => i.status !== 'resuelto'))
-const selected = computed(() => incidents.value.find(i => i.id === selectedId.value))
-const inProgress = computed(() => active.value.filter(i => i.status === 'atencion').length)
+// GET /leaks only returns open leaks.
+const selected = computed(() => leaks.value.find(i => i.id === selectedId.value))
+const inProgress = computed(() => leaks.value.filter(i => i.status === 'en_atencion').length)
 
 function select(id: string) {
   selectedId.value = id
@@ -130,8 +130,8 @@ watch(mode, () => {
   nextTick(() => sheet.value?.focus())
 })
 
-function finishReport(i: Incident) {
-  select(i.id)
+function finishReport(leakId: string) {
+  select(leakId)
 }
 </script>
 
@@ -148,11 +148,12 @@ function finishReport(i: Incident) {
     >
       <MapView
         ref="map"
-        :incidents="incidents"
+        :leaks="leaks"
         :selected-id="mode === 'detail' ? selectedId : null"
         :picking="mode === 'report'"
         :padding="padding"
         :overview="mini"
+        locate
         @select="select"
         @center="center = $event"
         @tap="onMapTap"
@@ -232,7 +233,7 @@ function finishReport(i: Incident) {
         @done="finishReport"
       />
 
-      <!-- Incident detail -->
+      <!-- Leak detail -->
       <div
         v-else-if="mode === 'detail' && selected"
         class="flex min-h-0 flex-1 flex-col"
@@ -246,27 +247,27 @@ function finishReport(i: Incident) {
             aria-label="Volver a la lista"
             @click="mode = 'browse'"
           />
-          <span class="text-sm font-medium text-muted tabular-nums">{{ selected.id }}</span>
+          <span class="text-sm font-medium text-muted uppercase tabular-nums">#{{ selected.id.slice(0, 8) }}</span>
         </header>
         <div class="min-h-0 flex-1 space-y-6 overflow-y-auto px-6 pb-6">
           <div class="space-y-3">
             <div class="flex items-center gap-3">
               <UrgencyScore
-                :incident="selected"
+                :leak="selected"
                 size="lg"
               />
               <p class="text-sm text-muted">
                 <span class="block text-base font-semibold text-highlighted">
-                  {{ selected.status === 'resuelto' ? 'Fuga resuelta' : `Urgencia ${LEVEL[selected.level].label.toLowerCase()}` }}
+                  Urgencia {{ LEVEL[selected.urgency_level].label.toLowerCase() }}
                 </span>
-                {{ selected.urgency }} de 100
+                {{ selected.urgency_score }} de 100
               </p>
             </div>
             <h2 class="text-2xl font-bold leading-tight tracking-tight text-highlighted">
-              {{ selected.address ?? fmtCoords(selected) }}
+              {{ addressOf(selected) ?? fmtCoords(selected) }}
             </h2>
             <p class="text-muted">
-              {{ SEVERITY[selected.severity].label }} · reportada {{ timeAgo(selected.firstAt) }}
+              {{ SEVERITY[selected.max_severity].label }} · reportada {{ timeAgo(Date.parse(selected.first_reported_at)) }}
             </p>
           </div>
 
@@ -276,7 +277,7 @@ function finishReport(i: Incident) {
                 Reportes
               </dt>
               <dd class="display text-2xl font-bold text-highlighted tabular-nums">
-                {{ selected.reports.length }}
+                {{ selected.report_count }}
               </dd>
             </div>
             <div class="bg-muted p-4">
@@ -287,25 +288,25 @@ function finishReport(i: Incident) {
                 <StatusSteps :status="selected.status" />
               </dd>
             </div>
+            <div class="col-span-2 bg-muted p-4">
+              <dt class="text-sm text-muted">
+                Agua perdida (estimada)
+              </dt>
+              <dd class="display text-2xl font-bold text-highlighted tabular-nums">
+                {{ fmtLiters(selected.liters_wasted) }}
+                <span class="text-sm font-medium text-muted">· {{ fmtLiters(selected.liters_per_day) }} al día</span>
+              </dd>
+            </div>
           </dl>
 
-          <div
-            v-if="selected.reports.some(r => r.photo)"
-            class="grid grid-cols-3 gap-2"
+          <img
+            v-if="selected.photo_url"
+            :src="selected.photo_url"
+            alt="Foto más reciente de la fuga"
+            class="aspect-video w-full rounded-xl object-cover"
           >
-            <img
-              v-for="r in selected.reports.filter(r => r.photo)"
-              :key="r.id"
-              :src="r.photo"
-              :alt="`Foto del reporte ${r.id}`"
-              class="aspect-square w-full rounded-lg object-cover"
-            >
-          </div>
         </div>
-        <footer
-          v-if="selected.status !== 'resuelto'"
-          class="space-y-2 border-t border-default p-4"
-        >
+        <footer class="space-y-2 border-t border-default p-4">
           <UButton
             block
             size="xl"
@@ -354,7 +355,7 @@ function finishReport(i: Incident) {
           <h2 class="font-semibold text-highlighted">
             Fugas activas
           </h2>
-          <span class="text-sm text-muted tabular-nums">{{ active.length }} activas · {{ inProgress }} en reparación</span>
+          <span class="text-sm text-muted tabular-nums">{{ leaks.length }} activas · {{ inProgress }} en reparación</span>
         </div>
 
         <!-- pb-44: lets the last rows scroll clear of the floating mini map. -->
@@ -364,7 +365,7 @@ function finishReport(i: Incident) {
           :class="mini ? 'pb-44' : 'pb-3'"
         >
           <li
-            v-for="i in active"
+            v-for="i in leaks"
             :key="i.id"
           >
             <button
@@ -372,17 +373,44 @@ function finishReport(i: Incident) {
               class="flex w-full items-center gap-3 rounded-xl p-3 text-left transition-colors hover:bg-muted active:bg-elevated focus-visible:outline-2 focus-visible:outline-gota-500"
               @click="select(i.id)"
             >
-              <UrgencyScore :incident="i" />
+              <UrgencyScore :leak="i" />
               <span class="min-w-0 flex-1">
-                <span class="block truncate font-medium text-highlighted">{{ i.address ?? fmtCoords(i) }}</span>
+                <span class="block truncate font-medium text-highlighted">{{ addressOf(i) ?? fmtCoords(i) }}</span>
                 <span class="block truncate text-sm text-muted">
-                  {{ SEVERITY[i.severity].label }} · {{ i.reports.length }} {{ i.reports.length === 1 ? 'reporte' : 'reportes' }} · {{ i.status === 'atencion' ? 'En reparación' : timeAgo(i.firstAt) }}
+                  {{ SEVERITY[i.max_severity].label }} · {{ i.report_count }} {{ i.report_count === 1 ? 'reporte' : 'reportes' }} · {{ i.status === 'en_atencion' ? 'En reparación' : timeAgo(Date.parse(i.first_reported_at)) }}
                 </span>
               </span>
             </button>
           </li>
           <li
-            v-if="!active.length"
+            v-if="error"
+            class="space-y-3 p-6 text-center text-muted"
+          >
+            <p>{{ apiErrorMessage(error, 'No pudimos cargar las fugas.') }}</p>
+            <UButton
+              color="neutral"
+              variant="soft"
+              icon="i-lucide-refresh-cw"
+              label="Reintentar"
+              :loading="loadStatus === 'pending'"
+              @click="refresh()"
+            />
+          </li>
+          <template v-else-if="loadStatus === 'pending' && !leaks.length">
+            <li
+              v-for="n in 4"
+              :key="n"
+              class="flex items-center gap-3 p-3"
+            >
+              <USkeleton class="size-11 rounded-drop" />
+              <span class="flex-1 space-y-2">
+                <USkeleton class="h-4 w-3/4" />
+                <USkeleton class="h-3 w-1/2" />
+              </span>
+            </li>
+          </template>
+          <li
+            v-else-if="!leaks.length"
             class="p-6 text-center text-muted"
           >
             No hay fugas activas. Si ves una, repórtala.
